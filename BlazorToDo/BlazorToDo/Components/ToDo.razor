@@ -1,0 +1,140 @@
+﻿@page "/todoList"
+@using BlazorToDo.Classes
+@using System.Timers
+@using System.Data
+@using Dapper
+@using Microsoft.Data.SqlClient
+@rendermode InteractiveServer
+@implements IDisposable
+
+<h3>ToDo List</h3>
+
+<form @onsubmit="AddCategory">
+    <label for="newCategory">New Category:</label>
+    <input type="text" id="newCategory" @bind="categoryInsert" />
+
+    <button type="submit">Add Category</button>
+</form>
+<form @onsubmit="AddToDo">
+    <label for="newToDo">New ToDo:</label>
+    <input type="text" id="newToDo" @bind="newToDo.toDo" />
+
+    <label for="category">Category:</label>
+    <select id="category" @bind="newToDo.category.Id">
+        @foreach (Category category in categories)
+        {
+            <option value="@category.Id">@category.name</option>
+        }
+    </select>
+
+    <button type="submit">Add ToDo</button>
+</form>
+
+
+<input type="text" @bind="value" @bind:event="oninput" @onkeyup="@ResetTimer" />
+
+<select id="categorySearch" @onchange="setCategory">
+    <option value="0">All Categories</option>
+    @foreach (Category category in categories)
+    {
+        <option value="@category.Id">@category.name</option>
+    }
+</select>
+<ol>
+    @foreach (ToDoItem item in todos)
+    {
+        <li>@($"{item.toDo} {item.category.name}")</li>
+    }
+</ol>
+
+@code {
+    private List<Category> categories;
+    private ToDoItem newToDo;
+    private List<ToDoItem> todosAll;
+    private List<ToDoItem> todos;
+    private string categoryInsert = string.Empty;
+    private string queryGetAllCategories = "SELECT id AS Id, name FROM Categories";
+    private string queryGetAll = "SELECT t.id AS toDoID, t.todo AS toDo, c.id AS categoryID, c.name AS category FROM Todos t INNER JOIN Categories c ON c.id = t.id_category";
+    private string connectionString = "Data Source=todolist-069-server.database.windows.net,1433;Initial Catalog=todolist-069-database;User ID=todolist-069-server-admin;Password=R0Q2QP5200HA732D$";
+    private string insertToDo = "INSERT Todos (todo, id_category) VALUES (@name, @idCat); SELECT CAST(SCOPE_IDENTITY() as INT)";
+    private string insertCategory = "INSERT Categories (name) VALUES (@name); SELECT CAST(SCOPE_IDENTITY() as INT)";
+    public string value { get; set; } = string.Empty;
+    public int catID { get; set; } = 0;
+    private Timer aTimer = default!;
+
+    public bool hasNoCBO = true;
+    public bool hasNoString = true;
+    protected override void OnInitialized()
+    {
+        aTimer = new Timer(400);
+        aTimer.Elapsed += filterToDos;
+        aTimer.AutoReset = false;
+        using (IDbConnection cnn = new SqlConnection(connectionString))
+            categories = cnn.Query<Category>(queryGetAllCategories).ToList();
+        using (IDbConnection cnn = new SqlConnection(connectionString))
+            todosAll = cnn.Query<ToDoItem>(queryGetAll).ToList();
+        todos = todosAll;
+        Category.DefaultInternal = categories[0].copy();
+        newToDo = ToDoItem.Default.copy();
+        newToDo.clearInternal();
+    }
+
+    void ResetTimer(KeyboardEventArgs e)
+    {
+        aTimer.Stop();
+        aTimer.Start();
+    }
+
+    void IDisposable.Dispose() => aTimer?.Dispose();
+
+    private async void filterToDos(Object? source, ElapsedEventArgs e)
+    {
+        hasNoString = string.IsNullOrEmpty(value);
+        await filterToDos();
+    }
+    private async Task filterToDos()
+    {
+        todos = hasNoCBO && hasNoString ?
+            todosAll :
+            todosAll.Where(todo => (hasNoCBO || todo.category.Id == catID) && (hasNoString || todo.toDo.ToLower().Contains(value))).ToList();
+        await InvokeAsync(StateHasChanged);
+    }
+    private async void setCategory(ChangeEventArgs e)
+    {
+        catID = Convert.ToInt32(e.Value);
+        hasNoCBO = catID == 0;
+        await filterToDos();
+    }
+
+    private async void AddToDo()
+    {
+        if (newToDo.toDo != ToDoItem.Default.toDo)
+        {
+            newToDo.category.name = categories.FirstOrDefault(categoryLoop => categoryLoop.Id == newToDo.category.Id)?.name ?? Category.Default.name;
+
+            using (IDbConnection cnn = new SqlConnection(connectionString))
+            {
+                newToDo.toDoID = await cnn.QuerySingleAsync<int>(insertToDo, new { idCat = newToDo.category.Id, name = newToDo.toDo});
+            }
+            ToDoItem newTemp = newToDo.copy();
+            todosAll.Insert(0, newTemp);
+            if (!(hasNoCBO && hasNoString))
+                todos.Insert(0, newTemp);
+            newToDo.clearInternal();
+            StateHasChanged();
+        }
+    }
+    private async void AddCategory()
+    {
+        if (!categories.Any(categoryLoop => categoryLoop.name == categoryInsert))
+        {
+            using (IDbConnection cnn = new SqlConnection(connectionString))
+            {
+                categories.Add(new Category(await cnn.QuerySingleAsync<int>(insertCategory, new { name = categoryInsert }), categoryInsert));
+            }
+            categoryInsert = Category.Default.name;
+            StateHasChanged();
+        }
+    }
+
+}
